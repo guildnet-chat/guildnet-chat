@@ -222,6 +222,27 @@ button.danger:hover {
 	grid-column: 2;
 }
 
+#buffer-header .actions button {
+	white-space: nowrap;
+}
+
+/* The buffer's name as a button opening the buffer list: narrow only. */
+#buffer-header .buffer-switch {
+	display: none;
+}
+
+/* Hide, when docked beside GuildNet's console: a quiet text button. */
+button.dock-hide, #buffer-header .actions button.dock-hide {
+	background: transparent;
+	color: inherit;
+	border: none;
+}
+.dock-hide-bar {
+	display: flex;
+	justify-content: flex-end;
+	padding: 5px 10px;
+}
+
 #buffer-header .status-here {
 	color: var(--green);
 }
@@ -335,13 +356,17 @@ button.danger:hover {
 	from { transform: rotate(0deg); }
 	to { transform: rotate(360deg); }
 }
-#composer input[type="text"] {
+#composer textarea {
 	flex: 1;
 	height: 35px;
 	box-sizing: border-box;
-	padding: 10px;
+	padding: 8px 10px;
+	resize: none;
+	font: inherit;
+	color: inherit;
+	line-height: 1.3;
 }
-#composer input[type="text"], #composer input[type="text"]:focus {
+#composer textarea, #composer textarea:focus {
 	border: none;
 	background: none;
 	outline: none;
@@ -551,6 +576,18 @@ details summary[role="button"] {
 	margin: 0.5rem;
 }
 
+/* GuildNet was updated since this page loaded: a reload gets it. Above the
+   error message, which sits in the same corner. */
+#update-msg {
+	position: fixed;
+	bottom: 5rem;
+	right: 0;
+	padding: 0.5rem;
+	margin: 0.5rem;
+	background-color: #ddeeff;
+	color: black;
+}
+
 #error-msg button, .dialog button.dialog-close {
 	border: none;
 	background: transparent;
@@ -610,6 +647,11 @@ details summary[role="button"] {
 }
 .dialog .protocol-handler .left {
 	flex-grow: 1;
+}
+.dialog .source {
+	clear: both;
+	margin: 1.5em 0 0;
+	font-size: 0.9em;
 }
 
 kbd {
@@ -796,12 +838,53 @@ ul.switcher-list .server {
 		border-left: none;
 	}
 
-	#buffer-header {
-		grid-template-columns: 1fr min-content;
+	/* The open buffer list sits below the header, whose buffer button
+	   closes it again. */
+	#buffer-list.expand {
+		grid-row: 2 / 4;
 	}
 
-	#buffer-header .title {
-		display: block;
+	/* One compact bar: the buffer button, then the actions. */
+	#buffer-header {
+		display: flex;
+		align-items: center;
+		min-width: 0; /* a long name shrinks, not widens the page */
+	}
+
+	#buffer-header .title, #buffer-header .description {
+		display: none;
+	}
+
+	#buffer-header .buffer-switch {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		min-width: 0;
+		min-height: 40px;
+		padding: 0 10px;
+		background: transparent;
+		color: inherit;
+		border: none;
+		font-weight: bold;
+	}
+
+	#buffer-header .buffer-switch-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	#buffer-header .buffer-switch-chevron {
+		flex: none;
+	}
+
+	#buffer-header .buffer-switch[aria-expanded="true"] .buffer-switch-chevron {
+		transform: rotate(180deg);
+	}
+
+	#buffer-header .actions {
+		flex: none;
+		margin-left: auto;
 	}
 }
 

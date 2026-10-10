@@ -121,7 +121,7 @@ export default function BufferHeader(props) {
 		break;
 	case BufferType.CHANNEL:
 		if (props.buffer.topic) {
-			description = linkify(stripANSI(props.buffer.topic), props.onChannelClick);
+			description = linkify(stripANSI(props.buffer.topic), props.onChannelClick, props.buffer.name);
 		}
 		if (props.buffer.joined) {
 			actions.push(html`
@@ -203,14 +203,26 @@ export default function BufferHeader(props) {
 			description = html`<${NickStatus} status=${status}/> ${realname} ${details}`;
 		}
 
-		actions = html`
+		actions.push(html`
 			<button
 				key="close"
 				class="danger"
 				onClick=${props.onClose}
 			>Close</button>
-		`;
+		`);
 		break;
+	}
+
+	// Docked beside GuildNet's console: hiding the chat is asked of it.
+	if (props.onHide) {
+		actions.push(html`
+			<button
+				key="hide"
+				type="button"
+				class="dock-hide"
+				onClick=${props.onHide}
+			>Hide</button>
+		`);
 	}
 
 	let name = props.buffer.name;
@@ -218,7 +230,21 @@ export default function BufferHeader(props) {
 		name = getServerName(props.server, props.bouncerNetwork);
 	}
 
+	// Narrow (docked, or a phone), the channel list folds away: the name
+	// becomes a button that opens it, in place of the title.
+	let open = Boolean(props.bufferListOpen);
 	return html`
+		<button
+			type="button"
+			class="buffer-switch"
+			aria-label="${name}: channels"
+			aria-controls="buffer-list"
+			aria-expanded=${open ? "true" : "false"}
+			onClick=${props.onBufferSwitch}
+		>
+			<span class="buffer-switch-name">${name}</span>
+			<svg class="buffer-switch-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+		</button>
 		<div class="title">${name}</div>
 		${description ? html`<div class="description">${description}</div>` : null}
 		<div class="actions">${actions}</div>

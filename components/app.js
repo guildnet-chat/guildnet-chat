@@ -1,6 +1,17 @@
 import * as irc from "../lib/irc.js";
 import Client from "../lib/client.js";
 import * as oauth2 from "../lib/oauth2.js";
+import { fetchBearerToken, BearerTokenError } from "../lib/bearer.js";
+import { setBotLabels } from "./bot-badge.js";
+import { setRepos } from "../lib/linkify.js";
+import { setSource } from "../lib/source.js";
+import { TypingTracker, TypingSender, describeTyping } from "../lib/typing.js";
+import { replyTags, snippet } from "../lib/reply.js";
+import { parseMultilineCap } from "../lib/multiline.js";
+
+function typingKey(serverID, target) {
+	return serverID + " " + target;
+}
 import Buffer from "./buffer.js";
 import BufferList from "./buffer-list.js";
 import BufferHeader from "./buffer-header.js";
@@ -24,6 +35,12 @@ import { SERVER_BUFFER, BufferType, ReceiptType, ServerStatus, Unread, BufferEve
 import commands from "../commands.js";
 import { setup as setupKeybindings } from "../keybindings.js";
 import * as store from "../store.js";
+import { hear as hearApproval, command as approvalCommand, watchWaiting } from "../lib/approvals.js";
+import { whoIsWorking } from "../lib/working.js";
+import { watchForUpdate, loadedVersion } from "../lib/update.js";
+import { openOn } from "../lib/landing.js";
+import { watchDock, hideDock } from "../lib/dock.js";
+import { guildServRoute, sendToGuildServ } from "../lib/guildserv.js";
 
 const baseConfig = {
 	server: {},
@@ -159,6 +176,53 @@ function getLatestReceipt(bufferStore, server, type) {
 	return last;
 }
 
+// newAutojoins returns the channels not yet auto-joined for account, and
+// remembers them all, so each is joined once and leaving it sticks.
+function newAutojoins(account, channels) {
+	let key = "gamja_autojoined:" + account.toLowerCase();
+	let done = [];
+	try {
+		done = JSON.parse(localStorage.getItem(key)) || [];
+	} catch (err) {
+		console.warn("Couldn't read auto-joined channels:", err);
+	}
+	let seen = new Set(done.map((ch) => ch.toLowerCase()));
+	let fresh = channels.filter((ch) => !seen.has(ch.toLowerCase()));
+	try {
+		localStorage.setItem(key, JSON.stringify([...done, ...fresh]));
+	} catch (err) {
+		console.warn("Couldn't remember auto-joined channels:", err);
+	}
+	return fresh;
+}
+
+// The channel last open on each network (bouncer network, in a bouncer),
+// so chat opens there next time rather than on the server tab.
+const lastChannelKey = "gamja_lastChannel";
+
+function loadLastChannel(params) {
+	try {
+		let all = JSON.parse(localStorage.getItem(lastChannelKey)) || {};
+		return all[params.bouncerNetwork || ""] || null;
+	} catch (err) {
+		console.warn("Couldn't read the last channel:", err);
+		return null;
+	}
+}
+
+function saveLastChannel(params, name) {
+	try {
+		let all = JSON.parse(localStorage.getItem(lastChannelKey)) || {};
+		let k = params.bouncerNetwork || "";
+		if (all[k] !== name) {
+			all[k] = name;
+			localStorage.setItem(lastChannelKey, JSON.stringify(all));
+		}
+	} catch (err) {
+		console.warn("Couldn't remember the last channel:", err);
+	}
+}
+
 function parseWindowHash(loc) {
 	if (loc.startsWith("#/")) {
 		loc = loc.substring(1);
@@ -204,6 +268,10 @@ export default class App extends Component {
 		dialog: null,
 		dialogData: null,
 		error: null,
+		// GuildNet has a newer version than this page (lib/update.js).
+		updated: false,
+		// Docked beside GuildNet's console, which can hide it (lib/dock.js).
+		hideable: false,
 		openPanels: {
 			bufferList: false,
 			memberList: false,
@@ -217,6 +285,12 @@ export default class App extends Component {
 	buffer = createRef();
 	composer = createRef();
 	switchToChannel = null;
+	/**
+	 * Whether the open buffer is one the user picked, rather than one gamja
+	 * opened by itself (the server tab on connecting, say). Picked ones are
+	 * never switched away from by openOnChannel.
+	 */
+	activeChosen = false;
 	/**
 	 * Parsed irc:// URL to automatically open. The user will be prompted for
 	 * confirmation for security reasons.
@@ -240,7 +314,14 @@ export default class App extends Component {
 		this.handleBufferListClose = this.handleBufferListClose.bind(this);
 		this.toggleBufferList = this.toggleBufferList.bind(this);
 		this.toggleMemberList = this.toggleMemberList.bind(this);
+		this.handleBufferSwitchClick = this.handleBufferSwitchClick.bind(this);
 		this.handleComposerSubmit = this.handleComposerSubmit.bind(this);
+		this.handleComposerTyping = this.handleComposerTyping.bind(this);
+		this.handleReplyClick = this.handleReplyClick.bind(this);
+		this.handleApprovalDecide = this.handleApprovalDecide.bind(this);
+		this.handleCancelReply = this.handleCancelReply.bind(this);
+		this.typingTracker = new TypingTracker();
+		this.typingSender = new TypingSender();
 		this.handleChannelClick = this.handleChannelClick.bind(this);
 		this.handleNickClick = this.handleNickClick.bind(this);
 		this.autocomplete = this.autocomplete.bind(this);
@@ -309,6 +390,16 @@ export default class App extends Component {
 		if (typeof config.server.ping === "number") {
 			connectParams.ping = config.server.ping;
 		}
+		if (config.bots) {
+			setBotLabels(config.bots);
+		}
+		if (config.repos) {
+			setRepos(config.repos);
+		}
+		setSource(config.source);
+		if (config.members && config.members.groups && typeof config.members.groups === "object") {
+			this.setState({ memberGroups: config.members.groups });
+		}
 
 		if (connectParams.autoconnect && config.server.auth === "mandatory") {
 			console.error("Error in config.json: cannot set server.autoconnect = true and server.auth = \"mandatory\"");
@@ -316,6 +407,10 @@ export default class App extends Component {
 		}
 		if (config.server.auth === "oauth2" && (!config.oauth2 || !config.oauth2.url || !config.oauth2.client_id)) {
 			console.error("Error in config.json: server.auth = \"oauth2\" requires oauth2 settings");
+			config.server.auth = null;
+		}
+		if (config.server.auth === "token" && (!config.token || !config.token.url)) {
+			console.error("Error in config.json: server.auth = \"token\" requires token settings");
 			config.server.auth = null;
 		}
 
@@ -376,6 +471,30 @@ export default class App extends Component {
 			connectParams.nick = connectParams.nick.replace("*", placeholder);
 		}
 
+		if (config.server.auth === "token") {
+			// Signed in on the site already: find out as whom. The token
+			// itself is fetched afresh on every connect, never kept.
+			let data;
+			try {
+				data = await fetchBearerToken(config.token.url);
+			} catch (err) {
+				if (err.status === 401 && config.token.signin) {
+					this.goToSignin();
+					return;
+				}
+				this.showError(err.message);
+				return;
+			}
+			connectParams.nick = data.account;
+			// The site says where this account belongs; join the channels it
+			// hasn't been put in before, so leaving one sticks.
+			let offered = Array.isArray(config.server.autojoin) ? config.server.autojoin : [];
+			connectParams.autojoin = newAutojoins(data.account, offered);
+			connectParams.saslPlain = null;
+			connectParams.saslBearer = { url: config.token.url };
+			connectParams.autoconnect = true;
+		}
+
 		if (config.server.auth === "oauth2" && !connectParams.saslOauthBearer) {
 			if (queryParams.error) {
 				console.error("OAuth 2.0 authorization failed: ", queryParams.error);
@@ -426,6 +545,25 @@ export default class App extends Component {
 			this.setState({ connectForm: false });
 			this.connect(connectParams);
 		}
+	}
+
+	// goToSignin sends the browser to the site's sign-in page: the whole
+	// page when gamja is framed by its own site, or just this one.
+	goToSignin() {
+		let signin = this.config && this.config.token && this.config.token.signin;
+		if (!signin) {
+			this.showError("You've been signed out.");
+			return;
+		}
+		let win = window;
+		try {
+			if (window.top !== window && window.top.location.origin === window.location.origin) {
+				win = window.top;
+			}
+		} catch {
+			// Framed by another site: leave it alone.
+		}
+		win.location.assign(signin);
 	}
 
 	async redirectOauth2Authorize() {
@@ -572,7 +710,9 @@ export default class App extends Component {
 		client.setReadMarker(storedBuffer.name, readReceipt.time);
 	}
 
-	switchBuffer(id) {
+	// switchBuffer opens a buffer. auto is for those gamja opens by itself,
+	// not the user.
+	switchBuffer(id, { auto = false } = {}) {
 		let buf, isInitialSwitch;
 		this.setState((state) => {
 			buf = State.getBuffer(state, id);
@@ -586,6 +726,10 @@ export default class App extends Component {
 			let update = State.updateBuffer(state, buf.id, { prevReadReceipt });
 
 			isInitialSwitch = !state.activeBuffer;
+			this.activeChosen = !auto;
+			if (buf.type === BufferType.CHANNEL) {
+				saveLastChannel(client.params, buf.name);
+			}
 
 			return { activeBuffer: buf.id, ...update };
 		}, () => {
@@ -617,6 +761,36 @@ export default class App extends Component {
 
 		// TODO: only mark as read if user scrolled at the bottom
 		this.markBufferAsRead(id);
+	}
+
+	// openOnChannel moves the user off the server tab, if gamja put them
+	// there, to a channel: the last one open, else #general, else the first
+	// joined (lib/landing.js). Run once connected and the channels joined.
+	openOnChannel(serverID) {
+		let client = this.clients.get(serverID);
+		if (!client) {
+			return;
+		}
+		let target = null;
+		this.setState((state) => {
+			let active = state.buffers.get(state.activeBuffer);
+			let channels = [];
+			for (let buf of state.buffers.values()) {
+				if (buf.server === serverID && buf.type === BufferType.CHANNEL && buf.joined) {
+					channels.push(buf.name);
+				}
+			}
+			target = openOn({
+				onServerTab: !active || (active.type === BufferType.SERVER && active.server === serverID),
+				chosen: this.activeChosen,
+				channels,
+				last: loadLastChannel(client.params),
+			});
+			return null; // just looking
+		});
+		if (target) {
+			this.switchBuffer({ server: serverID, name: target }, { auto: true });
+		}
 	}
 
 	markBufferAsRead(id) {
@@ -751,6 +925,8 @@ export default class App extends Component {
 		if (!msg.tags.time) {
 			msg.tags.time = irc.formatDate(new Date());
 		}
+		// What became of approvals, for their buttons.
+		hearApproval(msg);
 	}
 
 	handleChatMessage(serverID, bufName, msg) {
@@ -937,12 +1113,18 @@ export default class App extends Component {
 		});
 
 		client.addEventListener("error", (event) => {
+			// Signed out of the site (say, in another tab): go and sign in
+			// rather than keep failing to reconnect.
+			if (event.detail instanceof BearerTokenError && event.detail.status === 401) {
+				this.goToSignin();
+				return;
+			}
 			errorID = this.showError(event.detail);
 		});
 
 		this.createBuffer(serverID, SERVER_BUFFER);
 		if (!this.state.activeBuffer) {
-			this.switchBuffer({ server: serverID, name: SERVER_BUFFER });
+			this.switchBuffer({ server: serverID, name: SERVER_BUFFER }, { auto: true });
 		}
 
 		if (params.autojoin.length > 0) {
@@ -1171,6 +1353,7 @@ export default class App extends Component {
 		let destBuffers = this.routeMessage(serverID, msg);
 
 		this.setState((state) => State.handleMessage(state, msg, serverID, client));
+		this.noteTyping(serverID, client, msg);
 
 		let target, channel;
 		switch (msg.command) {
@@ -1233,6 +1416,10 @@ export default class App extends Component {
 				// messages sent right after connection registration
 				client.ping().then(() => this.handleWindowHashChange());
 			}
+
+			// Once the channels above are joined, open on one of them rather
+			// than the server tab (after the URL's choice, if any).
+			client.ping().then(() => this.openOnChannel(serverID)).catch(() => {});
 			break;
 		case "JOIN":
 			channel = msg.params[0];
@@ -1241,7 +1428,7 @@ export default class App extends Component {
 				this.syncBufferUnread(serverID, channel);
 			}
 			if (channel === this.switchToChannel) {
-				this.switchBuffer({ server: serverID, name: channel });
+				this.switchBuffer({ server: serverID, name: channel }, { auto: true });
 				this.switchToChannel = null;
 			}
 			break;
@@ -1646,7 +1833,7 @@ export default class App extends Component {
 			// fallthrough
 		case BufferType.NICK:
 			if (this.state.activeBuffer === buf.id) {
-				this.switchBuffer({ name: SERVER_BUFFER });
+				this.switchBuffer({ name: SERVER_BUFFER }, { auto: true });
 			}
 			this.setState((state) => {
 				let buffers = new Map(state.buffers);
@@ -1688,7 +1875,7 @@ export default class App extends Component {
 		}
 	}
 
-	privmsg(target, text) {
+	privmsg(target, text, tags = {}) {
 		if (target === SERVER_BUFFER) {
 			this.showError("Cannot send message in server buffer");
 			return;
@@ -1697,8 +1884,41 @@ export default class App extends Component {
 		let serverID = State.getActiveServerID(this.state);
 		let client = this.clients.get(serverID);
 
+		// What's said to GuildServ goes through the console where it says so
+		// (lib/guildserv.js): shown here as sent, answered over IRC.
+		let route = guildServRoute(this.config, target);
+		if (route) {
+			this.handleChatMessage(serverID, target, { command: "PRIVMSG", params: [target, text], prefix: { name: client.nick } });
+			sendToGuildServ(route, text).catch((err) => this.showError(err.message));
+			return;
+		}
+
+		if (!client.caps.enabled.has("message-tags")) {
+			tags = {};
+		}
+
 		let msg = { command: "PRIVMSG", params: [target, text] };
-		client.send(msg);
+		if (Object.keys(tags).length > 0) {
+			msg.tags = tags;
+		}
+		// One line longer than the server takes is split too: sent whole, the
+		// server would cut it off.
+		let tooLong = new TextEncoder().encode(text).length > irc.getMaxPrivmsgLen(client.isupport, client.nick, target);
+		if ((text.includes("\n") || tooLong) && client.supportsMultiline()) {
+			// One message, however many lines.
+			client.sendMultiline(target, text, tags);
+		} else if (text.includes("\n")) {
+			// The server can't take multiline messages: a message per line.
+			text.split("\n").filter((l) => l.trim() !== "").forEach((line, i) => {
+				let m = { command: "PRIVMSG", params: [target, line] };
+				if (i === 0 && msg.tags) {
+					m.tags = msg.tags;
+				}
+				client.send(m);
+			});
+		} else {
+			client.send(msg);
+		}
 
 		if (!client.caps.enabled.has("echo-message")) {
 			msg.prefix = { name: client.nick };
@@ -1723,7 +1943,73 @@ export default class App extends Component {
 			return;
 		}
 
-		this.privmsg(buf.name, text);
+		this.typingSender.sent(typingKey(buf.server, buf.name));
+		let replying = this.state.replyTo && this.state.replyTo.buffer === this.state.activeBuffer;
+		this.privmsg(buf.name, text, replying ? replyTags(this.state.replyTo.msg) : {});
+		if (this.state.replyTo) {
+			this.setState({ replyTo: null });
+		}
+	}
+
+	// handleApprovalDecide decides an approval from its buttons in chat, as
+	// the approver would by telling GuildServ.
+	handleApprovalDecide(id, allow, reason) {
+		this.privmsg("GuildServ", approvalCommand(id, allow, reason));
+	}
+
+	handleReplyClick(msg) {
+		this.setState({ replyTo: { buffer: this.state.activeBuffer, msg } });
+		if (this.composer.current) {
+			this.composer.current.focus();
+		}
+	}
+
+	handleCancelReply() {
+		this.setState({ replyTo: null });
+	}
+
+	// handleComposerTyping tells the others in the conversation you're
+	// typing (IRCv3 +typing), at most every few seconds, and when you stop.
+	handleComposerTyping(text) {
+		let buf = this.state.buffers.get(this.state.activeBuffer);
+		if (!buf || buf.type === BufferType.SERVER) {
+			return;
+		}
+		let client = this.clients.get(buf.server);
+		if (!client || !client.caps.enabled.has("message-tags")) {
+			return;
+		}
+		let value = this.typingSender.input(typingKey(buf.server, buf.name), text, Date.now());
+		if (value) {
+			try {
+				client.send({ tags: { "+typing": value }, command: "TAGMSG", params: [buf.name] });
+			} catch (err) {
+				console.warn("Couldn't send typing:", err);
+			}
+		}
+	}
+
+	// noteTyping follows others' typing: TAGMSG +typing, and their messages,
+	// which end it.
+	noteTyping(serverID, client, msg) {
+		if (!msg.prefix || client.isMyNick(msg.prefix.name)) {
+			return;
+		}
+		let where = client.isMyNick(msg.params[0]) ? msg.prefix.name : msg.params[0];
+		let k = typingKey(serverID, where);
+		if (msg.command === "TAGMSG" && msg.tags["+typing"]) {
+			this.typingTracker.update(k, msg.prefix.name, msg.tags["+typing"], Date.now());
+		} else if (msg.command === "PRIVMSG" || msg.command === "NOTICE") {
+			this.typingTracker.sent(k, msg.prefix.name);
+		} else {
+			return;
+		}
+		// Draw now, and again once anyone quiet has expired.
+		this.setState((state) => ({ typingTick: (state.typingTick || 0) + 1 }));
+		clearTimeout(this.typingTimer);
+		this.typingTimer = setTimeout(() => {
+			this.setState((state) => ({ typingTick: (state.typingTick || 0) + 1 }));
+		}, 6500);
 	}
 
 	handleBufferListClick(id) {
@@ -1743,6 +2029,22 @@ export default class App extends Component {
 				bufferList: !state.openPanels.bufferList,
 			};
 			return { openPanels };
+		});
+	}
+
+	// handleBufferSwitchClick opens and closes the channel list from the
+	// header's channel button (narrow), taking the keyboard into the list.
+	handleBufferSwitchClick() {
+		let open = !this.state.openPanels.bufferList;
+		this.toggleBufferList();
+		if (!open) {
+			return;
+		}
+		this.setState({}, () => {
+			let link = document.querySelector("#buffer-list li.active a") || document.querySelector("#buffer-list li a");
+			if (link) {
+				link.focus();
+			}
 		});
 	}
 
@@ -2154,21 +2456,48 @@ export default class App extends Component {
 		setupKeybindings(this);
 		window.addEventListener("focus", this.handleWindowFocus);
 		window.addEventListener("hashchange", this.handleWindowHashChange);
+		this.stopUpdateWatch = watchForUpdate({ onNewer: () => this.setState({ updated: true }) });
+		// Served by GuildNet: which approvals are still waiting on you, so older
+		// ones already settled lose their buttons (lib/approvals.js).
+		if (loadedVersion()) {
+			this.stopWaitingWatch = watchWaiting();
+		}
+		// Docked beside the console: it says whether there's a Hide.
+		this.stopDockWatch = watchDock({ onChange: (hideable) => this.setState({ hideable }) });
 	}
 
 	componentWillUnmount() {
 		document.title = this.baseTitle;
 		window.removeEventListener("focus", this.handleWindowFocus);
 		window.removeEventListener("hashchange", this.handleWindowHashChange);
+		if (this.stopUpdateWatch) {
+			this.stopUpdateWatch();
+		}
+		if (this.stopWaitingWatch) {
+			this.stopWaitingWatch();
+		}
+		this.stopDockWatch();
 	}
 
 	render() {
+		// Docked beside the console, which no longer has its own bar for it:
+		// Hide, at the end of the header (or alone, before there is one).
+		let onHide = this.state.hideable ? () => hideDock() : null;
+		let loneHide = null;
+		if (onHide) {
+			loneHide = html`
+				<div class="dock-hide-bar">
+					<button type="button" class="dock-hide" onClick=${onHide}>Hide</button>
+				</div>
+			`;
+		}
+
 		if (this.state.loading) {
 			let error = null;
 			if (this.state.error) {
 				error = html`<form><p class="error-text">${this.state.error}</p></form>`;
 			}
-			return html`<section id="connect">${error}</section>`;
+			return html`<section id="connect">${loneHide}${error}</section>`;
 		}
 
 		let activeBuffer = null, activeServer = null, activeBouncerNetwork = null;
@@ -2192,6 +2521,7 @@ export default class App extends Component {
 			let connecting = status === ServerStatus.CONNECTING || status === ServerStatus.REGISTERING;
 			return html`
 				<section id="connect">
+					${loneHide}
 					<${ConnectForm}
 						error=${this.state.error}
 						params=${this.state.connectParams}
@@ -2224,6 +2554,9 @@ export default class App extends Component {
 						onAddNetwork=${this.handleAddNetworkClick}
 						onManageNetwork=${() => this.handleManageNetworkClick(activeBuffer.server)}
 						onOpenSettings=${this.handleOpenSettingsClick}
+						bufferListOpen=${this.state.openPanels.bufferList}
+						onBufferSwitch=${this.handleBufferSwitchClick}
+						onHide=${onHide}
 					/>
 				</section>
 			`;
@@ -2252,6 +2585,7 @@ export default class App extends Component {
 						<${MemberList}
 							members=${activeBuffer.members}
 							users=${activeServer.users}
+							groups=${this.state.memberGroups}
 							bouncerNetwork=${activeBouncerNetwork}
 							onNickClick=${this.handleNickClick}
 						/>
@@ -2380,6 +2714,18 @@ export default class App extends Component {
 			break;
 		}
 
+		// Left open since GuildNet was updated: reloading gets the new version.
+		let updated = null;
+		if (this.state.updated) {
+			updated = html`
+				<div id="update-msg" role="status">
+					GuildNet has been updated.
+					${" "}
+					<button type="button" onClick=${() => window.location.reload()}>Reload</button>
+				</div>
+			`;
+		}
+
 		let error = null;
 		if (this.state.error) {
 			error = html`
@@ -2391,9 +2737,20 @@ export default class App extends Component {
 			`;
 		}
 
+		// A reply in progress belongs to the conversation it was started in.
+		let replyTo = this.state.replyTo && this.state.replyTo.buffer === this.state.activeBuffer ? this.state.replyTo : null;
+
 		let composerReadOnly = false;
 		if (activeServer && activeServer.status !== ServerStatus.REGISTERED) {
 			composerReadOnly = true;
+		}
+
+		// Who in the conversation is working, and on what (agents' away
+		// messages), for the strip above the message box.
+		let working = [];
+		if (activeBuffer && activeServer && (activeBuffer.type === BufferType.CHANNEL || activeBuffer.type === BufferType.NICK)) {
+			let nicks = activeBuffer.type === BufferType.CHANNEL ? [...activeBuffer.members.keys()] : [activeBuffer.name];
+			working = whoIsWorking(nicks, activeServer.users);
 		}
 
 		let commandOnly = false;
@@ -2403,6 +2760,11 @@ export default class App extends Component {
 		} else if (activeBuffer) {
 			let client = this.clients.get(activeBuffer.server);
 			privmsgMaxLen = irc.getMaxPrivmsgLen(client.isupport, client.nick, activeBuffer.name);
+			if (client.supportsMultiline()) {
+				// Long messages are split across lines as they're sent.
+				let limits = parseMultilineCap(client.caps.available.get("draft/multiline"));
+				privmsgMaxLen = limits.maxBytes || undefined;
+			}
 		}
 
 		let app = html`
@@ -2418,13 +2780,6 @@ export default class App extends Component {
 					onBufferClick=${this.handleBufferListClick}
 					onBufferClose=${this.handleBufferListClose}
 				/>
-				<button
-					class="expander"
-					onClick=${this.toggleBufferList}
-				>
-					<span></span>
-					<span></span>
-				</button>
 			</section>
 			${bufferHeader}
 			<${ScrollManager}
@@ -2444,6 +2799,8 @@ export default class App extends Component {
 						onAuthClick=${() => this.handleAuthClick(activeBuffer.server)}
 						onRegisterClick=${() => this.handleRegisterClick(activeBuffer.server)}
 						onVerifyClick=${this.handleVerifyClick}
+						onReplyClick=${this.handleReplyClick}
+						onApprovalDecide=${this.handleApprovalDecide}
 					/>
 				</section>
 			</>
@@ -2453,12 +2810,18 @@ export default class App extends Component {
 				client=${activeClient}
 				readOnly=${composerReadOnly}
 				onSubmit=${this.handleComposerSubmit}
+				onTyping=${this.handleComposerTyping}
+				replyTo=${replyTo ? { nick: replyTo.msg.prefix.name, text: snippet(replyTo.msg.params[1]) } : null}
+				onCancelReply=${this.handleCancelReply}
+				typing=${activeBuffer ? describeTyping(this.typingTracker.typing(typingKey(activeBuffer.server, activeBuffer.name), Date.now()).filter((nick) => !working.some((w) => w.nick === nick))) : ""}
+				working=${working}
 				onError=${this.showError}
 				autocomplete=${this.autocomplete}
 				commandOnly=${commandOnly}
 				maxLen=${privmsgMaxLen}
 			/>
 			${dialog}
+			${updated}
 			${error}
 		`;
 

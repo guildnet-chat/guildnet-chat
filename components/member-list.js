@@ -1,6 +1,7 @@
 import { html, Component } from "../lib/index.js";
 import { strip as stripANSI } from "../lib/ansi.js";
 import Membership from "./membership.js";
+import BotBadge from "./bot-badge.js";
 import * as irc from "../lib/irc.js";
 
 class MemberItem extends Component {
@@ -66,16 +67,34 @@ class MemberItem extends Component {
 				>
 					<${Membership} value=${this.props.membership}/>
 					${this.props.nick}
+					${user && user.bot ? html` <${BotBadge} host=${user.hostname}/>` : null}
 				</a>
 			</li>
 		`;
 	}
 }
 
+const prefixPrivs = ["~", "&", "@", "%", "+"]; // TODO: grab it from ISUPPORT PREFIX
+
+// Headings for the member list, by channel rank. config.json can rename
+// them (members.groups), keyed by prefix, with "" for no rank.
+const defaultGroupNames = {
+	"~": "Owners",
+	"&": "Admins",
+	"@": "Operators",
+	"%": "Half-operators",
+	"+": "Voiced",
+	"": "Members",
+};
+
+function groupOf(membership) {
+	let p = membership ? membership[0] : "";
+	return prefixPrivs.includes(p) ? p : "";
+}
+
 function sortMembers(a, b) {
 	let [nickA, membA] = a, [nickB, membB] = b;
 
-	const prefixPrivs = ["~", "&", "@", "%", "+"]; // TODO: grab it from ISUPPORT PREFIX
 	let i = prefixPrivs.indexOf(membA[0]), j = prefixPrivs.indexOf(membB[0]);
 	if (i < 0) {
 		i = prefixPrivs.length;
@@ -93,23 +112,41 @@ function sortMembers(a, b) {
 export default class MemberList extends Component {
 	shouldComponentUpdate(nextProps) {
 		return this.props.members !== nextProps.members
-			|| this.props.users !== nextProps.users;
+			|| this.props.users !== nextProps.users
+			|| this.props.groups !== nextProps.groups;
 	}
 
 	render() {
-		return html`
-			<ul>
-				${Array.from(this.props.members).sort(sortMembers).map(([nick, membership]) => html`
-					<${MemberItem}
-						key=${nick}
-						nick=${nick}
-						membership=${membership}
-						user=${this.props.users.get(nick)}
-						bouncerNetwork=${this.props.bouncerNetwork}
-						onClick=${() => this.props.onNickClick(nick)}
-					/>
-				`)}
-			</ul>
-		`;
+		let names = { ...defaultGroupNames, ...(this.props.groups || {}) };
+		let sorted = Array.from(this.props.members).sort(sortMembers);
+		let counts = new Map();
+		for (let [, membership] of sorted) {
+			let g = groupOf(membership);
+			counts.set(g, (counts.get(g) || 0) + 1);
+		}
+		let items = [];
+		let current = null;
+		for (let [nick, membership] of sorted) {
+			let g = groupOf(membership);
+			if (g !== current) {
+				current = g;
+				items.push(html`
+					<li class="member-group" role="presentation" key=${"group:" + g}>
+						${names[g]} <span class="member-group-count">${counts.get(g)}</span>
+					</li>
+				`);
+			}
+			items.push(html`
+				<${MemberItem}
+					key=${nick}
+					nick=${nick}
+					membership=${membership}
+					user=${this.props.users.get(nick)}
+					bouncerNetwork=${this.props.bouncerNetwork}
+					onClick=${() => this.props.onNickClick(nick)}
+				/>
+			`);
+		}
+		return html`<ul>${items}</ul>`;
 	}
 }

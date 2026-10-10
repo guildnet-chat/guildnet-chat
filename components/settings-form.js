@@ -1,4 +1,5 @@
 import { html, Component } from "../lib/index.js";
+import { sourceURL } from "../lib/source.js";
 
 export default class SettingsForm extends Component {
 	state = {};
@@ -55,6 +56,16 @@ export default class SettingsForm extends Component {
 			`;
 		}
 
+		let source = null;
+		if (sourceURL()) {
+			source = html`
+				<p class="source">
+					This chat is free software under the AGPL-3.0.${" "}
+					<a href=${sourceURL()} target="_blank" rel="noopener noreferrer">Source code</a>
+				</p>
+			`;
+		}
+
 		return html`
 			<form onInput=${this.handleInput} onSubmit=${this.handleSubmit}>
 				<label>
@@ -106,6 +117,8 @@ export default class SettingsForm extends Component {
 				<button>
 					Close
 				</button>
+
+				${source}
 			</form>
 		`;
 	}

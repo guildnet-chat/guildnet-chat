@@ -1,6 +1,10 @@
-# [gamja]
+# guildnet-chat
 
-A simple IRC web client.
+GuildNet's web chat: a fork of [gamja], a simple IRC web client, made to
+work inside [GuildNet](https://github.com/guildnet-chat/guildnet)'s
+console. The console serves it, signed in as you, docked beside its pages.
+What follows the screenshot is gamja's own guide, which still holds for
+running it on its own.
 
 <img src="https://fs.emersion.fr/protected/img/gamja/main.png" alt="Screenshot" width="800">
 
@@ -37,14 +41,18 @@ gamja can be configured via a [configuration file] and via [URL parameters].
 
 ## Contributing
 
-Send patches on [Codeberg], report bugs on the [issue tracker]. Discuss
-in [#soju on Libera Chat].
+Something to do with GuildNet goes here: see [CONTRIBUTING.md](CONTRIBUTING.md),
+and [SECURITY.md](SECURITY.md) for security problems. A bug that's
+gamja's own, and isn't about GuildNet, is better sent upstream: patches on
+[Codeberg], bugs on gamja's [issue tracker], talk in
+[#soju on Libera Chat].
 
 ## License
 
-AGPLv3, see LICENSE.
+AGPLv3 only, see LICENSE.
 
-Copyright (C) 2020 The gamja Contributors
+Copyright (C) 2020 The gamja Contributors, and The GuildNet Authors for
+GuildNet's changes
 
 [gamja]: https://codeberg.org/emersion/gamja
 [Codeberg]: https://codeberg.org/emersion/gamja

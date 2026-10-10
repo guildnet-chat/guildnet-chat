@@ -1,5 +1,6 @@
 {
   "name": "gamja",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "dependencies": {
     "htm": "^3.0.4",
@@ -23,6 +24,7 @@
     "start": "node ./dev-server.js",
     "build": "parcel build",
     "lint": "eslint",
+    "test": "node --test \"test/*.test.js\"",
     "clean": "rm -rf dist"
   },
   "private": true,

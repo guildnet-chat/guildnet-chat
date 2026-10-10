@@ -1,0 +1,29 @@
+# Lints, tests and builds every push and pull request.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: licences
+        run: node .github/licences.mjs
+      - run: npm clean-install --include=dev
+      - name: lint
+        run: npm run lint -- --max-warnings 0
+      - name: test
+        run: npm test
+      - name: build
+        run: npm run build

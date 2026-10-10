@@ -5,6 +5,12 @@ import { strip as stripANSI } from "../lib/ansi.js";
 import { BufferType, ServerStatus, BufferEventsDisplayMode, getMessageURL, isMessageBeforeReceipt, SettingsContext } from "../state.js";
 import * as store from "../store.js";
 import Membership from "./membership.js";
+import BotBadge, { isBotMessage } from "./bot-badge.js";
+import ReplyButton from "./reply-button.js";
+import ApprovalButtons from "./approval-buttons.js";
+import { approvalAsked, approvalPrompt } from "../lib/approvals.js";
+import { renderMarkdown } from "./markdown.js";
+import { repliesTo, findMessage, snippet } from "../lib/reply.js";
 
 function djb2(s) {
 	let hash = 5381;
@@ -140,7 +146,7 @@ class LogLine extends Component {
 			if (ctcp) {
 				if (ctcp.command === "ACTION") {
 					lineClass = "me-tell";
-					content = html`* ${createNick(msg.prefix.name)} ${linkify(stripANSI(ctcp.param), onChannelClick)}`;
+					content = html`* ${createNick(msg.prefix.name)}${isBotMessage(msg) ? html` <${BotBadge} host=${msg.prefix.host}/>` : null} ${renderMarkdown(stripANSI(ctcp.param), (t) => linkify(t, onChannelClick, buf.name))}`;
 				} else {
 					content = html`
 						${createNick(msg.prefix.name)} has sent a CTCP command: ${ctcp.command} ${ctcp.param}
@@ -155,14 +161,29 @@ class LogLine extends Component {
 				if (this.props.redacted) {
 					content = html`<i>This message has been deleted.</i>`;
 				} else {
-					content = html`${linkify(stripANSI(text), onChannelClick)}`;
+					// An approval's words can be someone else's: shown as written.
+					content = approvalPrompt(msg)
+						? html`${stripANSI(text)}`
+						: html`${renderMarkdown(stripANSI(text), (t) => linkify(t, onChannelClick, buf.name))}`;
 					lineClass += " talk";
 				}
 				content = html`
 					<span class="nick-caret" aria-hidden="true">${prefix}</span>
 					${createNick(msg.prefix.name)}
 					<span class="nick-caret" aria-hidden="true">${suffix}</span>
+					${isBotMessage(msg) ? html` <${BotBadge} host=${msg.prefix.host}/>` : null}
 					${" "}
+					${content}
+				`;
+			}
+
+			// A reply shows what it answers.
+			if (repliesTo(msg)) {
+				let original = findMessage(buf.messages, repliesTo(msg));
+				content = html`
+					<span class="reply-to">
+						${original ? html`<b>${original.prefix.name}</b> ${snippet(original.params[1])}` : "an earlier message"}
+					</span>
 					${content}
 				`;
 			}
@@ -292,7 +313,7 @@ class LogLine extends Component {
 			let topic = msg.params[1];
 			if (topic) {
 				content = html`
-					${createNick(msg.prefix.name)} changed the topic to: ${linkify(stripANSI(topic), onChannelClick)}
+					${createNick(msg.prefix.name)} changed the topic to: ${linkify(stripANSI(topic), onChannelClick, buf.name)}
 				`;
 			} else {
 				content = html`
@@ -389,11 +410,21 @@ class LogLine extends Component {
 			return null;
 		}
 
+		let canReply = this.props.onReplyClick && msg.tags.msgid && !this.props.redacted
+			&& (msg.command === "PRIVMSG" || msg.command === "NOTICE");
+		// An approval asking you to decide: Approve and Deny, right here.
+		let approval = this.props.onApprovalDecide && !this.props.redacted ? approvalAsked(msg, server.account) : null;
+		if (approval !== null) {
+			content = html`${content} <${ApprovalButtons} id=${approval} asked=${msg.tags.time} onDecide=${this.props.onApprovalDecide}/>`;
+		}
 		return html`
 			<div class="logline ${lineClass}" data-key=${msg.key} role="listitem">
 				<${Timestamp} date=${new Date(msg.tags.time)} url=${getMessageURL(buf, msg, bouncerNetwork)}/>
 				${" "}
 				${content}
+				${canReply ? html`
+					<${ReplyButton} onClick=${() => this.props.onReplyClick(msg)}/>
+				` : null}
 			</div>
 		`;
 	}
@@ -509,7 +540,7 @@ class FoldGroup extends Component {
 		if (lastDate - firstDate > 60 * 100) {
 			timestamp = [
 				timestamp,
-				" — ",
+				" to ",
 				html`
 					<${Timestamp} date=${lastDate} url=${getMessageURL(buf, lastMsg, bouncerNetwork)}/>
 				`,
@@ -720,6 +751,8 @@ export default class Buffer extends Component {
 		let onChannelClick = this.props.onChannelClick;
 		let onNickClick = this.props.onNickClick;
 		let onVerifyClick = this.props.onVerifyClick;
+		let onReplyClick = this.props.onReplyClick;
+		let onApprovalDecide = this.props.onApprovalDecide;
 
 		function createLogLine(msg) {
 			return html`
@@ -733,6 +766,8 @@ export default class Buffer extends Component {
 					onChannelClick=${onChannelClick}
 					onNickClick=${onNickClick}
 					onVerifyClick=${onVerifyClick}
+					onReplyClick=${onReplyClick}
+					onApprovalDecide=${onApprovalDecide}
 				/>
 			`;
 		}

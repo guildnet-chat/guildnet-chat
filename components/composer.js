@@ -65,6 +65,9 @@ export default class Composer extends Component {
 
 	handleInput(event) {
 		this.setState({ [event.target.name]: event.target.value });
+		if (event.target.name === "text" && this.props.onTyping) {
+			this.props.onTyping(event.target.value);
+		}
 
 		if (this.props.readOnly && event.target.name === "text" && !event.target.value) {
 			event.target.blur();
@@ -79,6 +82,19 @@ export default class Composer extends Component {
 
 	handleInputKeyDown(event) {
 		let input = event.target;
+
+		if (event.key === "Escape" && this.props.replyTo && this.props.onCancelReply) {
+			event.preventDefault();
+			this.props.onCancelReply();
+			return;
+		}
+
+		// Enter sends; Shift+Enter starts a new line. Not while an input
+		// method is still composing a character.
+		if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+			this.handleSubmit(event);
+			return;
+		}
 
 		if (!this.props.autocomplete || event.key !== "Tab") {
 			return;
@@ -409,6 +425,16 @@ export default class Composer extends Component {
 		this.textInput.current.focus();
 	}
 
+	// The box grows with its text, up to a point, then scrolls.
+	componentDidUpdate() {
+		let el = this.textInput.current;
+		if (!el) {
+			return;
+		}
+		el.style.height = "auto";
+		el.style.height = Math.min(el.scrollHeight, 200) + "px";
+	}
+
 	render() {
 		let classes = [];
 		if (this.props.readOnly && !this.state.text) {
@@ -471,18 +497,32 @@ export default class Composer extends Component {
 				onDragOver=${this.handleDragOver}
 				onDrop=${this.handleDrop}
 			>
-				<input
-					type="text"
+				<div class="typing" aria-live="polite">${this.props.typing || ""}</div>
+				${this.props.working && this.props.working.length > 0 ? html`
+					<div class="working" aria-label="Agents at work">
+						${this.props.working.map((w) => html`<span class="working-agent" key=${w.nick} title=${w.nick + ": " + w.doing}><b>${w.nick}</b> ${w.doing}</span>`)}
+					</div>
+				` : null}
+				${this.props.replyTo ? html`
+					<div class="replying">
+						<span>Replying to <b>${this.props.replyTo.nick}</b> <span class="replying-text">${this.props.replyTo.text}</span></span>
+						<button type="button" title="Cancel reply (Esc)" onClick=${this.props.onCancelReply}>×</button>
+					</div>
+				` : null}
+				<textarea
 					name="text"
+					rows="1"
 					ref=${this.textInput}
 					value=${this.state.text}
 					autocomplete="off"
 					placeholder=${placeholder}
 					enterkeyhint="send"
+					aria-label=${placeholder}
+					title="Enter to send, Shift+Enter for a new line"
 					onKeyDown=${this.handleInputKeyDown}
 					onPaste=${this.handleInputPaste}
 					maxlength=${this.props.maxLen}
-				/>
+				></textarea>
 				${uploadButton}
 			</form>
 		`;
