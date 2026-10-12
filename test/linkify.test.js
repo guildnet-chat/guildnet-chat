@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import linkify, { setRepos } from "../lib/linkify.js";
+import linkify, { githubLinks, setRepos } from "../lib/linkify.js";
 
 // Which parts of a message become links.
 
@@ -49,16 +49,25 @@ test("a repo named at the end of a sentence still counts", () => {
 	assert.deepEqual(links("that's in docs. PR #3 fixes it", "#platform", acme), ["https://github.com/acme-inc/docs/pull/3"]);
 });
 
+// Looking for pull requests takes time in step with a message's length, not
+// its square: four times as long a message takes about four times as long,
+// on whatever machine (the best of several tries, so a slow moment doesn't
+// count). Timed on its own: linkifyjs's own search isn't ours to time.
 test("looking for pull requests keeps a very long message quick to search", () => {
-	let text = "x".repeat(20000) + " " + "a/".repeat(5000) + " PR #1";
-	let time = (repos) => {
-		let start = performance.now();
-		links(text, "#engineering", repos);
-		return performance.now() - start;
+	setRepos(acme);
+	let text = (n) => "x".repeat(4 * n) + " " + "a/".repeat(n) + " PR #1";
+	let best = (t) => {
+		let min = Infinity;
+		for (let i = 0; i < 5; i++) {
+			let start = performance.now();
+			githubLinks(t, "#engineering");
+			min = Math.min(min, performance.now() - start);
+		}
+		return min;
 	};
-	time({}); // warmed up
-	let added = time(acme) - time({});
-	assert.ok(added < 50, `pull requests added ${added}ms`);
+	best(text(1000)); // warmed up
+	let short = best(text(5000)), long = best(text(20000));
+	assert.ok(long < short * 8 + 5, `a message four times as long took ${long}ms, against ${short}ms`);
 });
 
 test("a pull request's own address stays one link", () => {
