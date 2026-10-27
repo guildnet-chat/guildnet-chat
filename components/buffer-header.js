@@ -3,6 +3,7 @@ import linkify from "../lib/linkify.js";
 import { strip as stripANSI } from "../lib/ansi.js";
 import { BufferType, ServerStatus, getServerName } from "../state.js";
 import * as irc from "../lib/irc.js";
+import { isBotAccount } from "./bot-badge.js";
 
 const UserStatus = {
 	HERE: "here",
@@ -186,7 +187,7 @@ export default function BufferHeader(props) {
 				let desc = "This user is a server operator, they have administrator privileges.";
 				details.push(html`<abbr title=${desc}>server operator</abbr>`);
 			}
-			if (props.user.bot) {
+			if (props.user.bot && isBotAccount(props.user.account)) {
 				let desc = "This user is an automated bot.";
 				details.push(html`<abbr title=${desc}>bot</abbr>`);
 			}

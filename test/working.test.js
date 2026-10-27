@@ -32,3 +32,16 @@ test("the strip lists those in the conversation who are working, in its order", 
 		{ nick: "vera", doing: "waiting on approval #7 from ada" },
 	]);
 });
+
+// Only agents' away messages are work: a person's "working: ..." isn't put
+// in the strip, as isAgent (by account) says.
+test("a person's away message saying working isn't in the strip", () => {
+	let users = new Map([
+		["kai", { account: "kai", awayMessage: "working: reads web/login.go" }],
+		["iedger", { account: "iedger", awayMessage: "working: deploying" }],
+	]);
+
+	assert.deepEqual(whoIsWorking(["kai", "iedger"], users, (account) => account === "kai"), [
+		{ nick: "kai", doing: "reads web/login.go" },
+	]);
+});

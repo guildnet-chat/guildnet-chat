@@ -2,7 +2,7 @@ import * as irc from "../lib/irc.js";
 import Client from "../lib/client.js";
 import * as oauth2 from "../lib/oauth2.js";
 import { fetchBearerToken, BearerTokenError } from "../lib/bearer.js";
-import { setBotLabels } from "./bot-badge.js";
+import { setBotLabels, isBotAccount } from "./bot-badge.js";
 import { setRepos } from "../lib/linkify.js";
 import { setSource } from "../lib/source.js";
 import { TypingTracker, TypingSender, describeTyping } from "../lib/typing.js";
@@ -2750,7 +2750,7 @@ export default class App extends Component {
 		let working = [];
 		if (activeBuffer && activeServer && (activeBuffer.type === BufferType.CHANNEL || activeBuffer.type === BufferType.NICK)) {
 			let nicks = activeBuffer.type === BufferType.CHANNEL ? [...activeBuffer.members.keys()] : [activeBuffer.name];
-			working = whoIsWorking(nicks, activeServer.users);
+			working = whoIsWorking(nicks, activeServer.users, isBotAccount);
 		}
 
 		let commandOnly = false;

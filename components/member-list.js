@@ -1,7 +1,7 @@
 import { html, Component } from "../lib/index.js";
 import { strip as stripANSI } from "../lib/ansi.js";
 import Membership from "./membership.js";
-import BotBadge from "./bot-badge.js";
+import BotBadge, { isBotAccount } from "./bot-badge.js";
 import * as irc from "../lib/irc.js";
 
 class MemberItem extends Component {
@@ -67,7 +67,7 @@ class MemberItem extends Component {
 				>
 					<${Membership} value=${this.props.membership}/>
 					${this.props.nick}
-					${user && user.bot ? html` <${BotBadge} host=${user.hostname}/>` : null}
+					${user && user.bot && isBotAccount(user.account) ? html` <${BotBadge} host=${user.hostname}/>` : null}
 				</a>
 			</li>
 		`;
